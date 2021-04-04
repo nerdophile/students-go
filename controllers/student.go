@@ -3,10 +3,11 @@ package controllers
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"student/models"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gocql/gocql"
 )
 
 func HomeLink(context *gin.Context) {
@@ -14,17 +15,16 @@ func HomeLink(context *gin.Context) {
 }
 
 type Student struct {
-	ID        gocql.UUID `json:"ID"`
-	Firstname string     `json:"Firstname"`
-	Lastname  string     `json:"Lastname"`
-	Age       int        `json:"Age"`
-	IsDeleted bool       `json:"isDeleted"`
+	EnrollmentNumber string `json:"string"`
+	Name             string `json:"name"`
+	Class            string `json:"class"`
+	Subject          string `json:"subject"`
 }
 
 type CreateBookInput struct {
-	Firstname string `json:"firstName" binding:"required"`
-	Lastname  string `json:"lastName" binding:"required"`
-	Age       int    `json:"age" binding:"required"`
+	Name    string `json:"name" binding:"required"`
+	Class   string `json:"class" binding:"required"`
+	Subject string `json:"subject" binding:"required"`
 }
 
 func CreateStudent(c *gin.Context) {
@@ -36,24 +36,31 @@ func CreateStudent(c *gin.Context) {
 		return
 	}
 
-	cqlUID := gocql.TimeUUID()
-	if err := models.Session.Query("INSERT INTO students(id, firstname, lastname, age, isDeleted) VALUES(?, ?, ?, ?,?)",
-		cqlUID, input.Firstname, input.Lastname, input.Age, false).Exec(); err != nil {
+	enrollmentNumber := time.Now().UnixNano() / int64(time.Millisecond)
+	fmt.Println(enrollmentNumber)
+
+	if err := models.Session.Query("INSERT INTO students(name, class, subject, isdeleted, enrollmentnumber) VALUES(?, ?, ?, ?, ?)",
+		input.Name, input.Class, input.Subject, false, strconv.Itoa(int(enrollmentNumber))).Exec(); err != nil {
+		fmt.Println(err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	}
+	if err := models.Session.Query("INSERT INTO students_by_isDeleted(name, class, subject, isdeleted, enrollmentnumber) VALUES(?, ?, ?, ?, ?)",
+		input.Name, input.Class, input.Subject, false, strconv.Itoa(int(enrollmentNumber))).Exec(); err != nil {
 		fmt.Println(err.Error())
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	}
 
 	m := map[string]interface{}{}
-	query := "SELECT * FROM students WHERE id=?"
-	iterable := models.Session.Query(query, cqlUID).Iter()
+	query := "SELECT * FROM students WHERE enrollmentnumber=?"
+	iterable := models.Session.Query(query, strconv.Itoa(int(enrollmentNumber))).Iter()
 	found := false
 	for iterable.MapScan(m) {
 		found = true
 		newStudent = append(newStudent, Student{
-			ID:        m["id"].(gocql.UUID),
-			Firstname: m["firstName"].(string),
-			Lastname:  m["lastName"].(string),
-			Age:       m["age"].(int),
+			EnrollmentNumber: m["enrollmentnumber"].(string),
+			Name:             m["name"].(string),
+			Subject:          m["subject"].(string),
+			Class:            m["class"].(string),
 		})
 		m = map[string]interface{}{}
 	}
@@ -70,17 +77,17 @@ func GetAllStudents(c *gin.Context) {
 
 	var students []Student
 	m := map[string]interface{}{}
-	query := "SELECT * FROM students WHERE isDeleted=false"
+	query := "SELECT * FROM students_by_isdeleted where isDeleted=false;"
 	iterable := models.Session.Query(query).Iter()
 	found := false
 
 	for iterable.MapScan(m) {
 		found = true
 		students = append(students, Student{
-			ID:        m["id"].(gocql.UUID),
-			Firstname: m["firstName"].(string),
-			Lastname:  m["lastName"].(string),
-			Age:       m["age"].(int),
+			EnrollmentNumber: m["enrollmentnumber"].(string),
+			Name:             m["name"].(string),
+			Subject:          m["subject"].(string),
+			Class:            m["class"].(string),
 		})
 		m = map[string]interface{}{}
 	}
@@ -96,16 +103,16 @@ func GetOneStudent(c *gin.Context) {
 	var student []Student
 
 	m := map[string]interface{}{}
-	query := "SELECT * FROM students WHERE id=? AND isDeleted=false"
+	query := "SELECT * FROM students WHERE enrollmentNumber=? AND isDeleted=false"
 	iterable := models.Session.Query(query, c.Param("id")).Iter()
 	found := false
 	for iterable.MapScan(m) {
 		found = true
 		student = append(student, Student{
-			ID:        m["id"].(gocql.UUID),
-			Firstname: m["firstName"].(string),
-			Lastname:  m["lastName"].(string),
-			Age:       m["age"].(int),
+			EnrollmentNumber: m["enrollmentnumber"].(string),
+			Name:             m["name"].(string),
+			Subject:          m["subject"].(string),
+			Class:            m["class"].(string),
 		})
 		m = map[string]interface{}{}
 	}
@@ -118,8 +125,45 @@ func GetOneStudent(c *gin.Context) {
 }
 
 func DeleteStudent(c *gin.Context) {
-	query := "UPDATE STUDENTS SET isDeleted=true WHERE id=?"
-	if err := models.Session.Query(query, c.Param("id")).Exec(); err != nil {
+
+	var student []Student
+
+	m := map[string]interface{}{}
+	query := "SELECT * FROM students WHERE enrollmentNumber=? AND isDeleted=false"
+	iterable := models.Session.Query(query, c.Param("id")).Iter()
+	found := false
+	for iterable.MapScan(m) {
+		found = true
+		student = append(student, Student{
+			EnrollmentNumber: m["enrollmentnumber"].(string),
+			Name:             m["name"].(string),
+			Subject:          m["subject"].(string),
+			Class:            m["class"].(string),
+		})
+		m = map[string]interface{}{}
+	}
+
+	if found {
+		if err := models.Session.Query("INSERT INTO deleted_students(name, class, subject, enrollmentnumber) VALUES(?, ?, ?, ? )",
+			student[0].Name, student[0].Class, student[0].Subject, student[0].EnrollmentNumber).Exec(); err != nil {
+			fmt.Printf("FAILED AT INSERT 1")
+			fmt.Println(err.Error())
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"data": "Student not found"})
+	}
+
+	deleteQuery := "DELETE FROM students WHERE enrollmentNumber=?"
+	if err := models.Session.Query(deleteQuery, c.Param("id")).Exec(); err != nil {
+		fmt.Printf("FAILED AT DELETE 1")
+
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	deleteQuery2 := "DELETE FROM Students_by_isDeleted WHERE isDeleted=false and enrollmentNumber=?"
+	if err := models.Session.Query(deleteQuery2, c.Param("id")).Exec(); err != nil {
+		fmt.Printf("FAILED AT DELETE 2")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
